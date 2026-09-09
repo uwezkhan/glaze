@@ -35,6 +35,58 @@ namespace glz
    constexpr bool skip_toml_field =
       always_skipped<T> || (!check_write_function_pointers(Options) && is_member_function_pointer<T>);
 
+   // TOML bare keys admit only [A-Za-z0-9_-]. A runtime map key holding any other
+   // byte (a dot, whitespace, '=', a quote, a line break, an empty key) is not a
+   // bare key: written verbatim it splices into the document, turning one entry
+   // into a different structure or several forged entries. Detect the bare case so
+   // ordinary keys stay byte-identical.
+   GLZ_ALWAYS_INLINE constexpr bool toml_key_is_bare(const sv key) noexcept
+   {
+      if (key.empty()) return false;
+      for (const char c : key) {
+         const auto u = uint8_t(c);
+         const bool ok =
+            (u >= 'A' && u <= 'Z') || (u >= 'a' && u <= 'z') || (u >= '0' && u <= '9') || u == '_' || u == '-';
+         if (!ok) return false;
+      }
+      return true;
+   }
+
+   // Write a TOML map key. A bare key is written unquoted (output unchanged);
+   // anything else becomes a quoted basic string with the same escaping the string
+   // value writer uses, so the key round-trips instead of altering the surrounding
+   // structure.
+   template <class B>
+   GLZ_ALWAYS_INLINE void write_toml_key(const sv key, is_context auto&& ctx, B&& b, auto& ix) noexcept
+   {
+      if (toml_key_is_bare(key)) {
+         if (!ensure_space(ctx, b, ix + key.size() + write_padding_bytes)) [[unlikely]] {
+            return;
+         }
+         std::memcpy(&b[ix], key.data(), key.size());
+         ix += key.size();
+         return;
+      }
+      // Quoted basic string. Worst case each byte escapes to two characters.
+      if (!ensure_space(ctx, b, ix + 2 * key.size() + 2 + write_padding_bytes)) [[unlikely]] {
+         return;
+      }
+      std::memcpy(&b[ix], "\"", 1);
+      ++ix;
+      for (const char c : key) {
+         if (const auto escaped = char_escape_table[uint8_t(c)]; escaped) {
+            std::memcpy(&b[ix], &escaped, 2);
+            ix += 2;
+         }
+         else {
+            std::memcpy(&b[ix], &c, 1);
+            ++ix;
+         }
+      }
+      std::memcpy(&b[ix], "\"", 1);
+      ++ix;
+   }
+
    template <>
    struct serialize<TOML>
    {
@@ -801,19 +853,23 @@ namespace glz
             return;
          }
 
-         if (!ensure_space(ctx, b, ix + key.size() + 5 + write_padding_bytes)) [[unlikely]] {
-            return;
-         }
-
          if (!first) {
+            if (!ensure_space(ctx, b, ix + 2 + write_padding_bytes)) [[unlikely]] {
+               return;
+            }
             dump(", ", b, ix);
          }
          else {
             first = false;
          }
 
-         std::memcpy(&b[ix], key.data(), key.size());
-         ix += key.size();
+         write_toml_key(key, ctx, b, ix);
+         if (bool(ctx.error)) [[unlikely]] {
+            return;
+         }
+         if (!ensure_space(ctx, b, ix + 3 + write_padding_bytes)) [[unlikely]] {
+            return;
+         }
          dump(" = ", b, ix);
 
          write_inline_value<Options>(val, ctx, b, ix);
@@ -1348,12 +1404,14 @@ namespace glz
             else {
                first = false;
             }
-            // Write the key as a bare key
-            if (!ensure_space(ctx, b, ix + key.size() + 4 + write_padding_bytes)) [[unlikely]] {
+            // Write the key, quoting it when it is not a valid TOML bare key.
+            write_toml_key(key, ctx, b, ix);
+            if (bool(ctx.error)) [[unlikely]] {
                return;
             }
-            std::memcpy(&b[ix], key.data(), key.size());
-            ix += key.size();
+            if (!ensure_space(ctx, b, ix + 3 + write_padding_bytes)) [[unlikely]] {
+               return;
+            }
             std::memcpy(&b[ix], " = ", 3);
             ix += 3;
 

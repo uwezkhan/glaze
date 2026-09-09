@@ -5838,4 +5838,73 @@ suite recursion_depth_tests = [] {
    };
 };
 
+suite toml_map_key_quoting_tests = [] {
+   // A runtime map key that is not a valid TOML bare key must be quoted, or it
+   // splices into the document: a dotted key becomes a nested table and a key
+   // holding '=' / a line break forges extra entries.
+   "dotted key is quoted"_test = [] {
+      std::map<std::string, int> m{{"a.b", 1}};
+      std::string buffer{};
+      expect(not glz::write_toml(m, buffer));
+      expect(buffer == R"("a.b" = 1)") << buffer;
+      std::map<std::string, int> back{};
+      expect(not glz::read_toml(back, buffer)) << buffer;
+      expect(back == m);
+   };
+
+   "key with '=' and newline does not inject"_test = [] {
+      std::map<std::string, int> m{{"x = 1\ninjected", 2}};
+      std::string buffer{};
+      expect(not glz::write_toml(m, buffer));
+      expect(buffer == R"("x = 1\ninjected" = 2)") << buffer;
+      std::map<std::string, int> back{};
+      expect(not glz::read_toml(back, buffer)) << buffer;
+      expect(back.size() == 1);
+      expect(back == m);
+   };
+
+   "key with space and quote is quoted"_test = [] {
+      std::map<std::string, int> m{{"a b\"c", 3}};
+      std::string buffer{};
+      expect(not glz::write_toml(m, buffer));
+      expect(buffer == R"("a b\"c" = 3)") << buffer;
+      std::map<std::string, int> back{};
+      expect(not glz::read_toml(back, buffer)) << buffer;
+      expect(back == m);
+   };
+
+   "empty key is quoted"_test = [] {
+      std::map<std::string, int> m{{"", 4}};
+      std::string buffer{};
+      expect(not glz::write_toml(m, buffer));
+      expect(buffer == R"("" = 4)") << buffer;
+      std::map<std::string, int> back{};
+      expect(not glz::read_toml(back, buffer)) << buffer;
+      expect(back == m);
+   };
+
+   "bare keys stay unquoted"_test = [] {
+      std::map<std::string, int> m{{"normal_key-1", 5}, {"a", 6}};
+      std::string buffer{};
+      expect(not glz::write_toml(m, buffer));
+      expect(buffer == R"(a = 6
+normal_key-1 = 5)")
+         << buffer;
+      std::map<std::string, int> back{};
+      expect(not glz::read_toml(back, buffer)) << buffer;
+      expect(back == m);
+   };
+
+   // The inline-table map writer (a map nested as a value) shares the same key path.
+   "inline map key is quoted"_test = [] {
+      std::map<std::string, std::map<std::string, int>> m{{"outer", {{"in.ner", 7}}}};
+      std::string buffer{};
+      expect(not glz::write_toml(m, buffer));
+      expect(buffer == R"(outer = {"in.ner" = 7})") << buffer;
+      std::map<std::string, std::map<std::string, int>> back{};
+      expect(not glz::read_toml(back, buffer)) << buffer;
+      expect(back == m);
+   };
+};
+
 int main() { return 0; }
