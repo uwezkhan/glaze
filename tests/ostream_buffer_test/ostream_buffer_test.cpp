@@ -962,4 +962,105 @@ suite documentation_example_tests = [] {
    };
 };
 
+// Regression: the memset destination in dump_newline_indent must respect an ostream_buffer's flush
+// offset. An ostream_buffer indexes logically while data() returns the physical base, so once a
+// flush slides the window, an indent written through data() + ix lands past the physical end.
+// The generic-json writer is what reaches that path: it indents through dump_newline_indent/dumpn,
+// which go through data_at(). The reflected writers indent through &b[ix] instead, and operator[]
+// already subtracts the flush offset, so they never saw this. The prettified stream output must
+// byte-match the in-memory (std::string) output.
+namespace
+{
+   glz::generic_u64 make_nested_element(uint64_t i)
+   {
+      glz::generic_u64 key;
+      key["type"] = uint64_t(i % 2);
+      key["subject"]["simple"]["origin_uid"] = i;
+      key["mergeset"] = glz::generic_u64::object_t{};
+
+      // Vary nested array length per element so element byte-sizes differ, interleaving the
+      // buffer's growth points with its flush points. Uniform element sizes keep physical storage
+      // ahead of the logical index, which hides the bug.
+      glz::generic_u64 cs;
+      cs = glz::generic_u64::array_t{};
+      auto& csa = cs.get_array();
+      for (uint64_t d = 0; d < (i % 9); ++d) {
+         glz::generic_u64 origin;
+         origin["funcptr"]["funcptr_origin_uid"] = i * 31 + d;
+         origin["funcptr"]["target_func_idx"] = uint64_t(d);
+         csa.push_back(std::move(origin));
+      }
+      key["callstack"] = std::move(cs);
+
+      glz::generic_u64 elem;
+      elem["key"] = std::move(key);
+      elem["verdict"] = std::string(i % 3 == 0 ? "UNCOUNTED" : (i % 3 == 1 ? "LIKELY" : "UNLIKELY"));
+      elem["counter"] = uint64_t(i * 1000 + (i % 13));
+      return elem;
+   }
+
+   glz::generic_u64 make_nested_array(uint64_t n)
+   {
+      glz::generic_u64 root;
+      root = glz::generic_u64::array_t{};
+      auto& arr = root.get_array();
+      arr.reserve(n);
+      for (uint64_t i = 0; i < n; ++i) {
+         arr.push_back(make_nested_element(i));
+      }
+      return root;
+   }
+}
+
+suite ostream_buffer_prettify_overflow_tests = [] {
+   "generic prettify to default ostream_buffer matches string output"_test = [] {
+      glz::generic_u64 root = make_nested_array(20000);
+
+      std::string reference;
+      expect(!glz::write<glz::opts{.prettify = true}>(root, reference));
+
+      std::ostringstream oss;
+      glz::ostream_buffer<> buf(oss); // default 65536 capacity: flushes once 32KB is unflushed
+      auto ec = glz::write<glz::opts{.prettify = true}>(root, buf);
+      expect(!ec);
+      expect(oss.str() == reference);
+   };
+
+   "generic prettify deep chain to tiny ostream_buffer matches string output"_test = [] {
+      // Deep nesting => large indent count (n) at the leaf. A chain of single-member objects emits
+      // no separators, so no incremental flush happens here and the offset stays 0: this covers deep
+      // indentation through data_at() on the unflushed path. The two array cases cover the flushed
+      // path.
+      glz::generic_u64 root;
+      glz::generic_u64* cur = &root;
+      for (int d = 0; d < 200; ++d) {
+         (*cur)["n"] = glz::generic_u64::object_t{};
+         cur = &(*cur)["n"];
+      }
+      (*cur)["leaf"] = std::string("value");
+
+      std::string reference;
+      expect(!glz::write<glz::opts{.prettify = true}>(root, reference));
+
+      std::ostringstream oss;
+      glz::ostream_buffer<512> buf(oss);
+      auto ec = glz::write<glz::opts{.prettify = true}>(root, buf);
+      expect(!ec);
+      expect(oss.str() == reference);
+   };
+
+   "generic prettify to small ostream_buffer matches string output"_test = [] {
+      glz::generic_u64 root = make_nested_array(500);
+
+      std::string reference;
+      expect(!glz::write<glz::opts{.prettify = true}>(root, reference));
+
+      std::ostringstream oss;
+      glz::ostream_buffer<512> buf(oss); // small capacity: frequent flushes
+      auto ec = glz::write<glz::opts{.prettify = true}>(root, buf);
+      expect(!ec);
+      expect(oss.str() == reference);
+   };
+};
+
 int main() { return 0; }
