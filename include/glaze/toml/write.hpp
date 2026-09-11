@@ -53,9 +53,9 @@ namespace glz
    }
 
    // Write a TOML map key. A bare key is written unquoted (output unchanged);
-   // anything else becomes a quoted basic string with the same escaping the string
-   // value writer uses, so the key round-trips instead of altering the surrounding
-   // structure.
+   // anything else becomes a quoted basic string. Characters with a short escape use
+   // it, control bytes without one go out as \u00XX, so the key round-trips instead
+   // of altering the surrounding structure or reparsing as invalid TOML.
    template <class B>
    GLZ_ALWAYS_INLINE void write_toml_key(const sv key, is_context auto&& ctx, B&& b, auto& ix) noexcept
    {
@@ -67,8 +67,9 @@ namespace glz
          ix += key.size();
          return;
       }
-      // Quoted basic string. Worst case each byte escapes to two characters.
-      if (!ensure_space(ctx, b, ix + 2 * key.size() + 2 + write_padding_bytes)) [[unlikely]] {
+      // Quoted basic string. Worst case a control byte with no short escape
+      // expands to a six-character \u00XX sequence.
+      if (!ensure_space(ctx, b, ix + 6 * key.size() + 2 + write_padding_bytes)) [[unlikely]] {
          return;
       }
       std::memcpy(&b[ix], "\"", 1);
@@ -77,6 +78,16 @@ namespace glz
          if (const auto escaped = char_escape_table[uint8_t(c)]; escaped) {
             std::memcpy(&b[ix], &escaped, 2);
             ix += 2;
+         }
+         else if (uint8_t(c) < 0x20) {
+            // A control byte with no two-character escape must go out as \u00XX,
+            // otherwise it would sit raw in the basic string and reparse as invalid TOML.
+            char unicode_escape[6] = {'\\', 'u', '0', '0', '0', '0'};
+            constexpr char hex_digits[] = "0123456789ABCDEF";
+            unicode_escape[4] = hex_digits[(uint8_t(c) >> 4) & 0xF];
+            unicode_escape[5] = hex_digits[uint8_t(c) & 0xF];
+            std::memcpy(&b[ix], unicode_escape, 6);
+            ix += 6;
          }
          else {
             std::memcpy(&b[ix], &c, 1);

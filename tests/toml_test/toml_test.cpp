@@ -5895,6 +5895,18 @@ normal_key-1 = 5)")
       expect(back == m);
    };
 
+   // A control byte with no short escape must go out as \u00XX, not raw, or the
+   // key sits unescaped in the basic string and reparses as invalid TOML.
+   "control byte key is escaped as \\u00XX"_test = [] {
+      std::map<std::string, int> m{{std::string("a\x01\x1f", 3), 8}};
+      std::string buffer{};
+      expect(not glz::write_toml(m, buffer));
+      expect(buffer == R"("a\u0001\u001F" = 8)") << buffer;
+      std::map<std::string, int> back{};
+      expect(not glz::read_toml(back, buffer)) << buffer;
+      expect(back == m);
+   };
+
    // The inline-table map writer (a map nested as a value) shares the same key path.
    "inline map key is quoted"_test = [] {
       std::map<std::string, std::map<std::string, int>> m{{"outer", {{"in.ner", 7}}}};
