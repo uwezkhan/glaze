@@ -906,6 +906,48 @@ suite yaml_writer_edge_case_tests = [] {
       expect(parsed == original);
    };
 
+   "write_scalar_with_only_control_char_is_escaped"_test = [] {
+      // A control byte with no other quote-forcing character must still route to the
+      // double-quoted style. Emitting it in a plain scalar produces output no longer
+      // valid per the YAML character set (only \t, \n and \r are permitted C0 controls).
+      const std::string original = std::string("abc") + char(0x01) + "def";
+      std::string yaml;
+      auto wec = glz::write_yaml(original, yaml);
+      expect(!wec);
+      expect(yaml == "\"abc\\x01def\"");
+
+      std::string parsed{};
+      auto rec = glz::read_yaml(parsed, yaml);
+      expect(!rec) << glz::format_error(rec, yaml);
+      expect(parsed == original);
+   };
+
+   "write_scalar_with_embedded_nul_is_escaped"_test = [] {
+      const std::string original = std::string("a\0b", 3);
+      std::string yaml;
+      auto wec = glz::write_yaml(original, yaml);
+      expect(!wec);
+      expect(yaml == "\"a\\0b\"");
+
+      std::string parsed{};
+      auto rec = glz::read_yaml(parsed, yaml);
+      expect(!rec) << glz::format_error(rec, yaml);
+      expect(parsed == original);
+   };
+
+   "write_map_key_with_control_char_is_escaped"_test = [] {
+      std::map<std::string, int> value{{std::string("k") + char(0x1b), 1}};
+      std::string yaml{};
+      auto wec = glz::write_yaml(value, yaml);
+      expect(!wec);
+      expect(yaml == "\"k\\x1b\": 1\n");
+
+      std::map<std::string, int> parsed{};
+      auto rec = glz::read_yaml(parsed, yaml);
+      expect(!rec) << glz::format_error(rec, yaml);
+      expect(parsed == value);
+   };
+
    "write_bool_like_and_number_like_scalars_are_quoted"_test = [] {
       std::string bool_yaml{};
       auto bool_wec = glz::write_yaml(std::string{"true"}, bool_yaml);

@@ -1400,9 +1400,14 @@ namespace glz::yaml
          return true;
       }
 
-      // Check for characters that require quoting
+      // Check for characters that require quoting. A C0 control byte (< 0x20)
+      // cannot appear literally in a plain scalar, so it forces a quoted style;
+      // the double-quoted writer then escapes it as \xXX. This mirrors the
+      // control-character check the multiline block and double-quoted paths
+      // already apply, which the single-line plain path was missing. The listed
+      // \n, \r and \t are all < 0x20, so the earlier explicit form is subsumed.
       for (char c : s) {
-         if (c == ':' || c == '#' || c == ',' || c == '\n' || c == '\r' || c == '\t') {
+         if (c == ':' || c == '#' || c == ',' || static_cast<unsigned char>(c) < 0x20) {
             return true;
          }
       }
